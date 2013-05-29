@@ -22,19 +22,28 @@
 
 package jcifs.http;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.Enumeration;
-import java.net.UnknownHostException;
-import javax.servlet.*;
-import javax.servlet.http.*;
-import jcifs.*;
-import jcifs.smb.SmbSession;
+
+import javax.servlet.Filter;
+import javax.servlet.FilterChain;
+import javax.servlet.FilterConfig;
+import javax.servlet.ServletException;
+import javax.servlet.ServletRequest;
+import javax.servlet.ServletResponse;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
+
+import jcifs.Config;
+import jcifs.UniAddress;
 import jcifs.smb.NtlmChallenge;
 import jcifs.smb.NtlmPasswordAuthentication;
 import jcifs.smb.SmbAuthException;
+import jcifs.smb.SmbSession;
 import jcifs.util.Base64;
+import jcifs.util.IPAddress;
 import jcifs.util.LogStream;
-import jcifs.netbios.NbtAddress;
 
 /**
  * This servlet Filter can be used to negotiate password hashes with
@@ -55,7 +64,8 @@ public class NtlmHttpFilter implements Filter {
     private boolean enableBasic;
     private boolean insecureBasic;
     private String realm;
-
+    private String blacklist;
+    
     public void init( FilterConfig filterConfig ) throws ServletException {
         String name;
         int level;
@@ -71,7 +81,8 @@ public class NtlmHttpFilter implements Filter {
          */
         Config.setProperty( "jcifs.smb.lmCompatibility", "0" );
         Config.setProperty( "jcifs.smb.client.useExtendedSecurity", "false" );
-
+        Config.setProperty( "jcifs.smb.blacklist", "");
+        
         Enumeration e = filterConfig.getInitParameterNames();
         while( e.hasMoreElements() ) {
             name = (String)e.nextElement();
@@ -101,6 +112,9 @@ public class NtlmHttpFilter implements Filter {
             } catch( IOException ioe ) {
             }
         }
+        
+        blacklist = (String) Config.get("jcifs.smb.blacklist");
+        
     }
 
     public void destroy() {
@@ -118,6 +132,12 @@ public class NtlmHttpFilter implements Filter {
         HttpServletResponse resp = (HttpServletResponse)response;
         NtlmPasswordAuthentication ntlm;
 
+        if (isBlacklisted(req.getRemoteAddr())) {
+        	log.println(String.format("*** %s Blacklisted! Skip NTLM", req.getRemoteAddr()));
+        	chain.doFilter(request, response);
+        	return;
+        }
+        
         if ((ntlm = negotiate( req, resp, false )) == null) {
             return;
         }
@@ -125,6 +145,18 @@ public class NtlmHttpFilter implements Filter {
         chain.doFilter( new NtlmHttpServletRequest( req, ntlm ), response );
     }
 
+    private boolean isBlacklisted(String remoteAddr) {
+    	
+		String[] ips = blacklist.split(",");
+		for (int i=0;i<ips.length;i++) {
+			if (IPAddress.isInSubnet(remoteAddr, ips[i], "255.255.0.0")) {
+				return true;
+			}
+		}
+    	return false;
+    	
+	}
+    
     /**
      * Negotiate password hashes with MSIE clients using NTLM SSP
      * @param req The servlet request
